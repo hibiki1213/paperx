@@ -13,6 +13,7 @@
 #include "news.h"
 #include "market.h"          // 為替・日経平均（ページ2）
 #include "transit.h"         // 鉄道遅延（ページ2）
+#include "ota.h"             // GitHub Releases からの無線ファーム更新
 #include "fonts/wx_fonts.h" // pop_temp/pop_clock/pop_mid/lsjp_xb30/lsjp_b24/lsjp_r20/lsjp_r13/lsjp_news
 #include "wx_icons.h"        // Lucide天気アイコン(1bit ビットマップ: 120px/44px)
 #include <time.h>
@@ -48,6 +49,8 @@ static const int CLK_X = 560, CLK_Y = 0, CLK_W = 240, CLK_H = 68;
 
 // データ再取得＋全面更新の間隔
 static const unsigned long REFRESH_MS = 10UL * 60UL * 1000UL;  // 10分
+// OTA 更新確認の間隔（GitHub API 60req/h 制限に余裕。起動時にも1回確認する）
+static const unsigned long OTA_CHECK_MS = 6UL * 60UL * 60UL * 1000UL;  // 6時間
 
 // --- 状態 ---------------------------------------------------------------
 Preferences prefs;
@@ -59,6 +62,7 @@ static Weather g_w;
 static News    g_news;
 static int     g_lastMin = -1;
 static unsigned long g_lastRefreshMs = 0;
+static unsigned long g_lastOtaMs = 0;
 
 // ページ2（マーケット & 運行）用のデータと、現在表示中のページ。
 static Market  g_mkt;
@@ -528,6 +532,10 @@ void setup() {
   Serial.printf("NTP: %04d-%02d-%02d %02d:%02d wday=%d\n",
                 t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_wday);
 
+  // 起動時に最新ファームを確認（あれば更新→再起動。失敗時は drawFull が画面を戻す）
+  otaCheckAndUpdate(drawMessage);
+  g_lastOtaMs = millis();
+
   bool gw = fetchWeather(g_lat, g_lon, t.tm_hour, t.tm_wday, g_w);
   bool gn = fetchNews(g_news);
   Serial.printf("weather=%s temp=%.1f code=%d | news=%s count=%d\n",
@@ -587,6 +595,16 @@ void loop() {
     g_lastRefreshMs = millis();
     g_lastMin = t.tm_min;
     Serial.printf("[refresh] %02d:%02d (full, page=%d)\n", t.tm_hour, t.tm_min, g_page);
+  }
+
+  // 6時間ごと: OTA 更新確認（更新あれば再起動。失敗時のみ true→現在ページを描き直す）
+  if (millis() - g_lastOtaMs >= OTA_CHECK_MS) {
+    if (WiFi.status() == WL_CONNECTED && otaCheckAndUpdate(drawMessage)) {
+      getLocalTime(&t, 50);
+      drawCurrentPage(t);
+      g_lastMin = t.tm_min;
+    }
+    g_lastOtaMs = millis();
   }
 
   delay(40);
