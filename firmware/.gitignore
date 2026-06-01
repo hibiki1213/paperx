@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+*.bin
+*.elf
+# WiFi/地点などの秘匿設定（M2以降）
+include/secrets.h
