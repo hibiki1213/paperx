@@ -199,14 +199,18 @@ static double moonAge(int y, int m, int d) {
   return age < 0 ? age + 29.530588853 : age;
 }
 static void drawMoon(int cx, int cy, int r, double phase01) {
-  // 明るい側を黒で塗る（満月=黒丸 / 新月=輪郭のみ）。北半球基準で満ちは右側。
+  // 影(欠け)側を黒で塗る（新月=黒丸 / 満月=輪郭のみ）。北半球基準で満ちは右側。
   double ct = cos(2 * M_PI * phase01);
   for (int dy = -r; dy <= r; dy++) {
-    double xw = sqrt((double)r * r - (double)dy * dy);
-    int sx, ex;
-    if (phase01 < 0.5) { sx = cx + (int)lround(xw * ct); ex = cx + (int)lround(xw); }
-    else               { sx = cx - (int)lround(xw);      ex = cx - (int)lround(xw * ct); }
-    if (ex >= sx) display.drawFastHLine(sx, cy + dy, ex - sx + 1, GxEPD_BLACK);
+    int xw = (int)lround(sqrt((double)r * r - (double)dy * dy));
+    int left = cx - xw, right = cx + xw, y = cy + dy;
+    if (phase01 < 0.5) {                          // 右側が明るい → 左(影)を黒
+      int term = cx + (int)lround(xw * ct);
+      if (term > left) display.drawFastHLine(left, y, term - left, GxEPD_BLACK);
+    } else {                                      // 左側が明るい → 右(影)を黒
+      int term = cx - (int)lround(xw * ct);
+      if (right > term) display.drawFastHLine(term + 1, y, right - term, GxEPD_BLACK);
+    }
   }
   display.drawCircle(cx, cy, r, GxEPD_BLACK);
   display.drawCircle(cx, cy, r - 1, GxEPD_BLACK);
