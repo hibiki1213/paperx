@@ -13,6 +13,7 @@
 #include "news.h"
 #include "market.h"          // 為替・日経平均（ページ2）
 #include "transit.h"         // 鉄道遅延（ページ2）
+#include "warning.h"         // 気象警報・注意報（大田区）
 #include "ota.h"             // GitHub Releases からの無線ファーム更新
 #include "fonts/wx_fonts.h" // pop_temp/pop_clock/pop_mid/lsjp_xb30/lsjp_b24/lsjp_r20/lsjp_r13/lsjp_news
 #include "wx_icons.h"        // Lucide天気アイコン(1bit ビットマップ: 120px/44px)
@@ -68,6 +69,7 @@ static unsigned long g_lastOtaMs = 0;
 // ページ2（マーケット & 運行）用のデータと、現在表示中のページ。
 static Market  g_mkt;
 static Transit g_tr;
+static WeatherWarning g_warn;
 enum { PAGE_HOME = 0, PAGE_MARKET, PAGE_STATUS, PAGE_COUNT };
 static int g_page = PAGE_HOME;
 
@@ -281,9 +283,24 @@ static void drawHero(const Weather& w) {
   uText(lsjp_b24, 174, 214, wxConditionJP(w.codeNow));
   snprintf(buf, sizeof buf, "最高%d°　最低%d°", w.hiToday, w.loToday);
   uText(lsjp_b24, 30, 256, buf);
-  for (int k = 0; k < 3; k++) display.drawRect(26 + k, 296 + k, 400 - 2 * k, 50 - 2 * k, GxEPD_BLACK);
-  heroAdvice(w, buf, sizeof buf);
-  uCenter(lsjp_b24, 226, 330, buf);
+  // 一言ボックス：大田区に警報・注意報が出ていればそれを優先表示（警報以上は反転で強調）。
+  if (g_warn.active) {
+    if (g_warn.severity >= 3) {                 // 警報/危険警報/特別警報 → 反転
+      display.fillRect(26, 296, 400, 50, GxEPD_BLACK);
+      u8g2Fonts.setForegroundColor(GxEPD_WHITE);
+      u8g2Fonts.setBackgroundColor(GxEPD_BLACK);
+      uCenter(lsjp_b24, 226, 330, g_warn.headline);
+      u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+      u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+    } else {                                    // 注意報 → 通常の枠
+      for (int k = 0; k < 3; k++) display.drawRect(26 + k, 296 + k, 400 - 2 * k, 50 - 2 * k, GxEPD_BLACK);
+      uCenter(lsjp_b24, 226, 330, g_warn.headline);
+    }
+  } else {
+    for (int k = 0; k < 3; k++) display.drawRect(26 + k, 296 + k, 400 - 2 * k, 50 - 2 * k, GxEPD_BLACK);
+    heroAdvice(w, buf, sizeof buf);
+    uCenter(lsjp_b24, 226, 330, buf);
+  }
 }
 
 // フッタ左: 明日以降の5日間を横並び（各列 曜日 / アイコン / 最高°最低°）。
@@ -733,11 +750,13 @@ void setup() {
   bool gfx = fetchFx(g_mkt);
   bool gnk = fetchNikkei(g_mkt);
   bool gtr = fetchTransit(g_tr);
-  Serial.printf("fx=%s usdjpy=%.2f eurjpy=%.2f | nikkei=%s %ld chg=%s%+ld(%+.2f%%) | transit=%s delayed=%d other=%d\n",
+  bool gwn = fetchWarning(g_warn);
+  Serial.printf("fx=%s usdjpy=%.2f eurjpy=%.2f | nikkei=%s %ld chg=%s%+ld(%+.2f%%) | transit=%s delayed=%d other=%d | warn=%s active=%d\n",
                 gfx ? "OK" : "FAIL", g_mkt.usdjpy, g_mkt.eurjpy,
                 gnk ? "OK" : "FAIL", g_mkt.nikkei,
                 g_mkt.hasChange ? "" : "集計中", g_mkt.nikkeiChg, g_mkt.nikkeiPct,
-                gtr ? "OK" : "FAIL", g_tr.delayedCount, g_tr.otherCount);
+                gtr ? "OK" : "FAIL", g_tr.delayedCount, g_tr.otherCount,
+                gwn ? "OK" : "FAIL", g_warn.active);
 
   drawFull(t);
   g_lastMin = t.tm_min;
@@ -809,6 +828,7 @@ void loop() {
       fetchFx(g_mkt);
       fetchNikkei(g_mkt);
       fetchTransit(g_tr);
+      fetchWarning(g_warn);
     }
     getLocalTime(&t, 50);
     drawCurrentPage(t);
