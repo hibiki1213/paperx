@@ -13,6 +13,8 @@
 static const char* OTA_OWNER = "hibiki1213";
 static const char* OTA_REPO  = "paperx";
 
+OtaState g_ota;   // ページ3の状態表示が参照する
+
 // tag_name 先頭の 'v' 等を飛ばし、最初の数字連続だけを整数化（整数バージョン運用）。
 static long parseTagVersion(const char* tag) {
   if (!tag) return -1;
@@ -56,6 +58,9 @@ bool otaCheckAndUpdate(OtaStatusFn status) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
   long latest = fetchLatestVersion();
+  g_ota.checkedAt   = time(nullptr);     // ページ3の「最終確認」表示用
+  g_ota.lastCheckOk = (latest >= 0);
+  if (latest >= 0) g_ota.latest = latest;
   if (latest <= FW_VERSION) return false;   // 最新 or 取得失敗 → 何もしない
 
   Serial.printf("[ota] updating %d -> %ld\n", FW_VERSION, latest);

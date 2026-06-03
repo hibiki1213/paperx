@@ -16,6 +16,7 @@
 #include "ota.h"             // GitHub Releases からの無線ファーム更新
 #include "fonts/wx_fonts.h" // pop_temp/pop_clock/pop_mid/lsjp_xb30/lsjp_b24/lsjp_r20/lsjp_r13/lsjp_news
 #include "wx_icons.h"        // Lucide天気アイコン(1bit ビットマップ: 120px/44px)
+#include <qrcode.h>          // ricmoo/QRCode: Wi-Fi設定AP参加用QR
 #include <time.h>
 #include <math.h>
 
@@ -67,8 +68,11 @@ static unsigned long g_lastOtaMs = 0;
 // ページ2（マーケット & 運行）用のデータと、現在表示中のページ。
 static Market  g_mkt;
 static Transit g_tr;
-enum { PAGE_HOME = 0, PAGE_MARKET, PAGE_COUNT };
+enum { PAGE_HOME = 0, PAGE_MARKET, PAGE_STATUS, PAGE_COUNT };
 static int g_page = PAGE_HOME;
+
+// ページ3: 特大時計の部分更新ウィンドウ（日付は上、罫線は下なので帯で囲える）。
+static const int SCLK_X = 0, SCLK_Y = 132, SCLK_W = 800, SCLK_H = 96;
 
 static void loadLocation() {
   prefs.begin("paperx", true);
@@ -415,10 +419,56 @@ static void drawMarketFull(const struct tm& t) {
   } while (display.nextPage());
 }
 
+// === ページ3: 状態（日付・時計メイン＋ファーム/Wi-Fi 情報）===============
+static void drawBigClock(const struct tm& t) {
+  char buf[8]; snprintf(buf, sizeof buf, "%d:%02d", t.tm_hour, t.tm_min);
+  uCenter(pop_temp, W / 2, 212, buf);
+}
+
+static void drawStatusPage(const struct tm& t) {
+  char buf[96];
+  // --- 日付（中央上）・時計（特大・中央）---
+  snprintf(buf, sizeof buf, "%d年%d月%d日 %s曜日",
+           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, WD[t.tm_wday]);
+  uCenter(lsjp_xb30, W / 2, 104, buf);
+  drawBigClock(t);
+  hbar(252);
+  // --- ファームウェア ---
+  uText(lsjp_b24, 40, 304, "ファームウェア");
+  const char* st = !g_ota.lastCheckOk     ? "状態不明"
+                 : g_ota.latest > FW_VERSION ? "アップデートあり"
+                                             : "最新です";
+  snprintf(buf, sizeof buf, "v%d ・ %s", FW_VERSION, st);
+  uRight(lsjp_b24, W - 40, 304, buf);
+  if (g_ota.checkedAt > 0) {
+    struct tm c; localtime_r(&g_ota.checkedAt, &c);
+    snprintf(buf, sizeof buf, "自動更新 有効 ・ 最終確認 %d:%02d", c.tm_hour, c.tm_min);
+  } else {
+    snprintf(buf, sizeof buf, "自動更新 有効");
+  }
+  uText(lsjp_r20, 40, 338, buf);
+  // --- Wi-Fi ---
+  uText(lsjp_b24, 40, 408, "Wi-Fi");
+  String ssid = WiFi.SSID();
+  uRight(lsjp_b24, W - 40, 408, ssid.length() ? ssid.c_str() : "未接続");
+}
+
+static void drawStatusFull(const struct tm& t) {
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+    drawStatusPage(t);
+  } while (display.nextPage());
+}
+
 // 現在のページを全面描画。
 static void drawCurrentPage(const struct tm& t) {
-  if (g_page == PAGE_MARKET) drawMarketFull(t);
-  else                       drawFull(t);
+  if (g_page == PAGE_MARKET)      drawMarketFull(t);
+  else if (g_page == PAGE_STATUS) drawStatusFull(t);
+  else                            drawFull(t);
 }
 
 // 時計だけ部分更新（毎分・高速）。
@@ -431,6 +481,18 @@ static void drawClockPartial(const struct tm& t) {
     u8g2Fonts.setForegroundColor(GxEPD_BLACK);
     u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
     uRight(pop_clock, W - 28, 58, buf);
+  } while (display.nextPage());
+}
+
+// ページ3の特大時計だけ部分更新（毎分）。
+static void drawStatusClockPartial(const struct tm& t) {
+  display.setPartialWindow(SCLK_X, SCLK_Y, SCLK_W, SCLK_H);
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+    drawBigClock(t);
   } while (display.nextPage());
 }
 
@@ -447,16 +509,83 @@ static void drawMessage(const char* title, const char* l1, const char* l2) {
     if (l2 && l2[0]) uCenter(lsjp_r20, W / 2, 290, l2);
   } while (display.nextPage());
 }
+// Wi-Fi 参加用QR（WIFI:形式）を (cx,cy) 中心に scale px/セルで描く。白の余白も確保。
+static void drawWifiQR(const char* text, int cx, int cy, int scale) {
+  QRCode qr;
+  uint8_t data[qrcode_getBufferSize(4)];
+  qrcode_initText(&qr, data, 4, ECC_MEDIUM, text);   // v4=33セル, 30字程度を余裕で収容
+  int dim = qr.size * scale;
+  int x0 = cx - dim / 2, y0 = cy - dim / 2;
+  int q = scale * 2;  // クワイエットゾーン（白枠）
+  display.fillRect(x0 - q, y0 - q, dim + 2 * q, dim + 2 * q, GxEPD_WHITE);
+  for (uint8_t y = 0; y < qr.size; y++)
+    for (uint8_t x = 0; x < qr.size; x++)
+      if (qrcode_getModule(&qr, x, y))
+        display.fillRect(x0 + x * scale, y0 + y * scale, scale, scale, GxEPD_BLACK);
+}
+
+// 設定ポータル起動時の画面：左に手順、右に PaperX-Setup 参加QR。
+static void drawSetupScreen() {
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.drawRect(0, 0, W, Hh, GxEPD_BLACK);
+    u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+    uText(lsjp_xb30, 56, 96,  "Wi-Fi 設定");
+    uText(lsjp_r20,  56, 168, "① スマホのカメラで");
+    uText(lsjp_r20,  56, 202, "   右のQRを読み取る");
+    uText(lsjp_r20,  56, 268, "② PaperX-Setup に接続");
+    uText(lsjp_r20,  56, 334, "③ 開いた画面でホーム");
+    uText(lsjp_r20,  56, 368, "   Wi-Fi を設定");
+    drawWifiQR("WIFI:S:PaperX-Setup;T:nopass;;", 596, 232, 7);
+    uCenter(lsjp_r20, 596, 372, "PaperX-Setup");
+  } while (display.nextPage());
+}
+
 static void onApMode(WiFiManager*) {
   Serial.println("config portal up -> show setup screen");
-  drawMessage("PaperX", "スマホで PaperX-Setup に接続し", "ホームWi-Fiを設定してください");
+  drawSetupScreen();
+}
+
+// ページ3でKEY1長押し時：その場でWi-Fi設定ポータルを起動（onApMode が QR を描画）。
+// ブロッキング。保存 or 180秒タイムアウトで復帰し、現在ページを再描画する。
+static void startWifiPortal(const struct tm& t) {
+  Serial.println("[wifi] KEY1 long-press -> start config portal");
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(180);
+  wm.setTitle("PaperX");
+  wm.setCustomHeadElement(PORTAL_HEAD);
+  wm.setAPCallback(onApMode);
+  wm.startConfigPortal(AP_NAME);
+  if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();   // タイムアウト時は元のAPへ復帰を試みる
+  Serial.printf("[wifi] portal done, status=%d\n", WiFi.status());
+  g_lastMin = -1;          // 時計を確実に再描画
+  drawCurrentPage(t);
+}
+
+// KEY3: 保存済みWi-Fiを削除して再起動。再起動後は autoConnect が設定画面(QR)を出す。
+static void eraseWifiAndRestart() {
+  Serial.println("[wifi] KEY3 -> erase credentials & restart");
+  drawMessage("PaperX", "Wi-Fi情報を削除しました", "再起動して設定画面を表示します");
+  delay(1500);
+  WiFiManager wm;
+  wm.resetSettings();
+  delay(300);
+  ESP.restart();
 }
 
 // === 物理ボタン（debounce付き 立ち下がり検出） =========================
+// KEY1=ページ送り / KEY2=Wi-Fi設定（QR）/ KEY3=Wi-Fi削除。
 static const int BTN_PINS[3] = {PIN_HOME, PIN_NEXT, PIN_AUX};
 static int g_btnLast[3] = {HIGH, HIGH, HIGH};
 static unsigned long g_btnT[3] = {0, 0, 0};
-// 押された(立ち下がり)ピンの BTN_PINS インデックスを返す。なければ -1。
+// KEY3(Wi-Fi削除)は確認制：1回目で「初期化しますか？」、2回目の押下で実行。
+static const unsigned long RESET_CONFIRM_MS = 10000;  // 確認の有効時間（無操作で取消）
+static bool g_wifiResetPending = false;
+static unsigned long g_wifiResetAt = 0;
+// 押された(立ち下がり)ボタンの index(0=KEY1 / 1=KEY2 / 2=KEY3) を返す。なければ -1。
 static int pollButtons() {
   int hit = -1;
   unsigned long now = millis();
@@ -466,7 +595,7 @@ static int pollButtons() {
       g_btnT[i] = now;
       g_btnLast[i] = s;
       if (s == LOW) {  // active-low: LOW=押下
-        Serial.printf("[btn] GPIO%d pressed\n", BTN_PINS[i]);
+        Serial.printf("[btn] KEY%d pressed\n", i + 1);
         hit = i;
       }
     }
@@ -512,7 +641,7 @@ void setup() {
   drawMessage("PaperX", "Wi-Fiに接続中…", "");
   if (!wm.autoConnect(AP_NAME)) {
     Serial.println("WiFi connect failed -> offline");
-    drawMessage("PaperX", "オフライン", "起動時にBOOTを押すとWi-Fi設定");
+    drawMessage("PaperX", "オフライン", "電源を入れ直すと設定画面が出ます");
     display.hibernate();
     return;
   }
@@ -560,16 +689,34 @@ void loop() {
   struct tm t;
   if (!getLocalTime(&t, 50)) { delay(500); return; }
 
-  // ボタン: KEY1=ホーム, KEY2=次のページへ切替（押されたら即・全面描画）
+  // ボタン: KEY1=ページ送り（1→2→3→1）/ KEY2=Wi-Fi設定（QR）/ KEY3=Wi-Fi削除（確認制）。
   int btn = pollButtons();
-  if (btn == 0 && g_page != PAGE_HOME) {            // KEY1 → ホーム
-    g_page = PAGE_HOME;
-    drawCurrentPage(t);
-    Serial.println("[page] -> HOME");
-  } else if (btn == 1) {                            // KEY2 → 次ページ
+
+  // KEY3 の確認待ち中：もう一度KEY3で実行、ほかのボタン or タイムアウトで取消。
+  if (g_wifiResetPending) {
+    if (btn == 2) {
+      eraseWifiAndRestart();                        // 削除→再起動（戻らない）
+    } else if (btn >= 0 || millis() - g_wifiResetAt >= RESET_CONFIRM_MS) {
+      g_wifiResetPending = false;
+      Serial.println("[wifi] reset canceled");
+      drawCurrentPage(t);
+      g_lastMin = t.tm_min;
+    }
+    delay(40);
+    return;
+  }
+
+  if (btn == 0) {                                   // KEY1 → 次のページへ
     g_page = (g_page + 1) % PAGE_COUNT;
     drawCurrentPage(t);
     Serial.printf("[page] -> %d\n", g_page);
+  } else if (btn == 1) {                            // KEY2 → Wi-Fi設定（QR画面）
+    startWifiPortal(t);
+  } else if (btn == 2) {                            // KEY3 → まず確認を表示（1回目）
+    g_wifiResetPending = true;
+    g_wifiResetAt = millis();
+    drawMessage("初期化しますか？", "もう一度同じボタンを押すと削除", "ほかのボタンで取消");
+    Serial.println("[wifi] reset pending (press same button again)");
   }
 
   // 毎分: 時計だけ部分更新（ホーム表示中のみ。時計はホームにしか無い）
@@ -577,6 +724,9 @@ void loop() {
     if (g_page == PAGE_HOME) {
       drawClockPartial(t);
       Serial.printf("[clock] %02d:%02d (partial)\n", t.tm_hour, t.tm_min);
+    } else if (g_page == PAGE_STATUS) {
+      drawStatusClockPartial(t);
+      Serial.printf("[clock] %02d:%02d (status partial)\n", t.tm_hour, t.tm_min);
     }
     g_lastMin = t.tm_min;
   }
