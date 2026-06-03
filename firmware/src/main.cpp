@@ -149,6 +149,36 @@ static int drawReasonWrapped(const uint8_t* f, int x, int y0, int maxw, int lh,
   return lineNo;
 }
 
+// 表示しきれない遅延路線を「〇〇線、〇〇線、…など N 路線が遅延」と幅一杯に列挙（最大maxLines行）。
+// 全部入れば末尾は「…が遅延」、入りきらなければ末尾を「…など N 路線が遅延」にする。
+static void drawDelayList(const uint8_t* f, int x, int y0, int maxw, int lh,
+                          const char* const* names, int cnt, int maxLines) {
+  if (maxLines > 3) maxLines = 3;
+  char suf[48]; snprintf(suf, sizeof suf, "など%d路線が遅延", cnt);
+  int sufW = uWidth(f, suf);
+  int sepW = uWidth(f, "、");
+  char line[3][256] = {{0}};
+  int lineNo = 0, placed = 0;
+  bool inLine = false;
+  for (int k = 0; k < cnt; k++) {
+    int nameW = uWidth(f, names[k]);
+    bool last = (lineNo == maxLines - 1);
+    int reserve = last ? (sepW + sufW) : 0;     // 末尾行は「など…」の幅を確保
+    int curW = uWidth(f, line[lineNo]);
+    int need = (inLine ? sepW : 0) + nameW;
+    if (inLine && curW + need + reserve > maxw) {
+      if (last) break;                          // これ以上は入らない
+      lineNo++; inLine = false;
+      if (nameW + ((lineNo == maxLines - 1) ? (sepW + sufW) : 0) > maxw) break;
+    }
+    if (inLine) strlcat(line[lineNo], "、", sizeof line[lineNo]);
+    strlcat(line[lineNo], names[k], sizeof line[lineNo]);
+    inLine = true; placed++;
+  }
+  strlcat(line[lineNo], placed >= cnt ? "が遅延" : suf, sizeof line[lineNo]);
+  for (int l = 0; l <= lineNo; l++) uText(f, x, y0 + l * lh, line[l]);
+}
+
 // === 天気アイコン（Lucide 1bit ビットマップ） =========================
 // s>=80 をヒーロー(120px)、それ未満を予報行(44px)として中央寄せで描画。
 // drawBitmap はセットされたビットだけ黒で打つので、白背景はそのまま残る。
@@ -382,8 +412,8 @@ static void drawMarketPage(const struct tm& t) {
 
   // 遅延あり: 優先順(京急→横須賀→京浜東北→山手→…)に、入るだけ理由全文を表示。
   const int badgeW = 64, badgeH = 26, rlh = 25, reasonX = 64, bottom = 470;
-  int ry = 282, shown = 0;
-  for (int p = 0; p < TRANSIT_N; p++) {
+  int ry = 282, shown = 0, p = 0;
+  for (; p < TRANSIT_N; p++) {
     int i = TRANSIT_PRIORITY[p];
     if (!g_tr.delayed[i]) continue;
     if (ry + 28 + rlh > bottom) break;    // 次の路線の名前＋理由1行も入らない
@@ -404,9 +434,16 @@ static void drawMarketPage(const struct tm& t) {
     ry += L * rlh + 14;
     shown++;
   }
+  // 残りの遅延路線は名前を幅一杯に列挙（「〇〇線、〇〇線、…など N 路線が遅延」）。
   if (g_tr.delayedCount > shown) {
-    snprintf(buf, sizeof buf, "ほか %d 路線が遅延", g_tr.delayedCount - shown);
-    uText(lsjp_r20, 24, ry < 472 ? ry : 472, buf);   // 画面外に出さないようクランプ
+    const char* remain[TRANSIT_N]; int rc = 0;
+    for (; p < TRANSIT_N; p++) {
+      int i = TRANSIT_PRIORITY[p];
+      if (g_tr.delayed[i]) remain[rc++] = TRANSIT_NAMES[i];
+    }
+    int y0 = ry < 470 ? ry : 470;
+    int sl = (478 - y0) / 26; if (sl < 1) sl = 1; if (sl > 2) sl = 2;
+    drawDelayList(lsjp_r20, 24, y0, W - 48, 26, remain, rc, sl);
   }
 }
 
