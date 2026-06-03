@@ -6,7 +6,7 @@
 #include <time.h>
 
 // リリースの度に +1 する。GitHub のタグ "v<N>" の N と一致させること。
-#define FW_VERSION 7
+#define FW_VERSION 8
 
 // 更新中の状態を画面に出すためのコールバック（任意）。描画は main.cpp が担う。
 typedef void (*OtaStatusFn)(const char* title, const char* line1, const char* line2);

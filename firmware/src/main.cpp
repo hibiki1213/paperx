@@ -597,18 +597,30 @@ static void onApMode(WiFiManager*) {
   drawSetupScreen();
 }
 
-// ページ3でKEY1長押し時：その場でWi-Fi設定ポータルを起動（onApMode が QR を描画）。
-// ブロッキング。保存 or 180秒タイムアウトで復帰し、現在ページを再描画する。
-static void startWifiPortal(const struct tm& t) {
-  Serial.println("[wifi] KEY1 long-press -> start config portal");
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180);
-  wm.setTitle("PaperX");
-  wm.setCustomHeadElement(PORTAL_HEAD);
-  wm.setAPCallback(onApMode);
-  wm.startConfigPortal(AP_NAME);
-  if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();   // タイムアウト時は元のAPへ復帰を試みる
-  Serial.printf("[wifi] portal done, status=%d\n", WiFi.status());
+// KEY2 のWi-Fi設定ポータル（ノンブロッキング）。表示中は loop で process() を回し、
+// KEY1で取消（戻る）/ 設定完了 / タイムアウトのいずれかで終了する。
+static bool g_portalActive = false;
+static unsigned long g_portalStartMs = 0;
+static WiFiManager* g_portalWM = nullptr;
+
+static void startWifiPortal() {
+  Serial.println("[wifi] KEY2 -> start config portal (non-blocking)");
+  if (!g_portalWM) g_portalWM = new WiFiManager();
+  g_portalWM->setConfigPortalBlocking(false);   // ← ブロックしない（KEY1で戻れるように）
+  g_portalWM->setConfigPortalTimeout(180);
+  g_portalWM->setTitle("PaperX");
+  g_portalWM->setCustomHeadElement(PORTAL_HEAD);
+  g_portalWM->setAPCallback(onApMode);          // QR設定画面を描画
+  g_portalWM->startConfigPortal(AP_NAME);
+  g_portalActive = true;
+  g_portalStartMs = millis();
+}
+
+static void endWifiPortal(const struct tm& t, const char* why) {
+  if (g_portalWM) g_portalWM->stopConfigPortal();
+  g_portalActive = false;
+  if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();   // 元のAPへ復帰を試みる
+  Serial.printf("[wifi] portal end (%s), status=%d\n", why, WiFi.status());
   g_lastMin = -1;          // 時計を確実に再描画
   drawCurrentPage(t);
 }
@@ -740,6 +752,16 @@ void loop() {
   // ボタン: KEY1=ページ送り（1→2→3→1）/ KEY2=Wi-Fi設定（QR）/ KEY3=Wi-Fi削除（確認制）。
   int btn = pollButtons();
 
+  // Wi-Fi設定ポータル表示中：KEY1で戻る / 設定完了 / タイムアウトで終了。
+  if (g_portalActive) {
+    bool done = g_portalWM && g_portalWM->process();     // ポータルを処理（true=接続完了）
+    if (btn == 0)                                   endWifiPortal(t, "KEY1 で戻る");
+    else if (done)                                  endWifiPortal(t, "設定完了");
+    else if (millis() - g_portalStartMs >= 185000UL) endWifiPortal(t, "タイムアウト");
+    delay(20);
+    return;
+  }
+
   // KEY3 の確認待ち中：もう一度KEY3で実行、ほかのボタン or タイムアウトで取消。
   if (g_wifiResetPending) {
     if (btn == 2) {
@@ -759,7 +781,7 @@ void loop() {
     drawCurrentPage(t);
     Serial.printf("[page] -> %d\n", g_page);
   } else if (btn == 1) {                            // KEY2 → Wi-Fi設定（QR画面）
-    startWifiPortal(t);
+    startWifiPortal();
   } else if (btn == 2) {                            // KEY3 → まず確認を表示（1回目）
     g_wifiResetPending = true;
     g_wifiResetAt = millis();
