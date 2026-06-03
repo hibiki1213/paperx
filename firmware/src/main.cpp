@@ -122,6 +122,33 @@ static void drawWrapped(const uint8_t* f, int x, int y0, int maxw, int lh, const
   if (ll > 0 && lineNo < 2) uText(f, x, y0 + lineNo * lh, line);
 }
 
+// UTF-8 を maxw 幅・最大 maxLines 行で折返し描画。あふれたら最終行末に「…」。描いた行数を返す。
+static int drawReasonWrapped(const uint8_t* f, int x, int y0, int maxw, int lh,
+                             const char* s, int maxLines) {
+  char line[256] = {0}; int ll = 0, lineNo = 0;
+  const char* p = s;
+  while (*p) {
+    int n = utf8Len(p);
+    char cand[300]; memcpy(cand, line, ll); memcpy(cand + ll, p, n); cand[ll + n] = 0;
+    if (uWidth(f, cand) > maxw && ll > 0) {
+      if (lineNo >= maxLines - 1) {                 // 最終行があふれた → 「…」付けて終了
+        char e[300]; snprintf(e, sizeof e, "%s…", line);
+        while (uWidth(f, e) > maxw && ll > 0) {
+          int back = 1; while (back < ll && ((unsigned char)line[ll - back] & 0xC0) == 0x80) back++;
+          ll -= back; line[ll] = 0; snprintf(e, sizeof e, "%s…", line);
+        }
+        uText(f, x, y0 + lineNo * lh, e);
+        return lineNo + 1;
+      }
+      uText(f, x, y0 + lineNo * lh, line);
+      lineNo++; ll = 0; line[0] = 0;
+    }
+    memcpy(line + ll, p, n); ll += n; line[ll] = 0; p += n;
+  }
+  if (ll > 0) { uText(f, x, y0 + lineNo * lh, line); lineNo++; }
+  return lineNo;
+}
+
 // === 天気アイコン（Lucide 1bit ビットマップ） =========================
 // s>=80 をヒーロー(120px)、それ未満を予報行(44px)として中央寄せで描画。
 // drawBitmap はセットされたビットだけ黒で打つので、白背景はそのまま残る。
@@ -306,20 +333,6 @@ static void fmtComma(long v, char* out, size_t n) {
   out[oi] = 0;
 }
 
-// 路線名などを左から並べ、幅を超えたら改行。最大 maxLines 行（超過分は捨てる）。
-// firstX>=0 のとき1行目だけその x から始める（先頭ラベルの右に流し込む用途）。
-static void drawNameList(const uint8_t* f, int x, int y0, int maxw, int lh,
-                         const char* const* names, int n, int maxLines, int firstX) {
-  const int gap = 18;
-  int cx = (firstX >= 0) ? firstX : x, line = 0;
-  for (int i = 0; i < n; i++) {
-    int w = uWidth(f, names[i]);
-    if (cx > x && cx + w > x + maxw) { line++; cx = x; if (line >= maxLines) return; }
-    uText(f, cx, y0 + line * lh, names[i]);
-    cx += w + gap;
-  }
-}
-
 // マーケット & 運行ページの中身（バッファ前提・refreshは呼び出し側）。
 static void drawMarketPage(const struct tm& t) {
   char buf[64];
@@ -355,55 +368,45 @@ static void drawMarketPage(const struct tm& t) {
 
   hbar(206);
 
-  // --- 東京 主要路線：遅延を理由つきで上に、平常はまとめて下に ---
+  // --- 東京 主要路線：遅延を優先順に理由全文つきで（平常リストは出さない）---
   uText(lsjp_xb30, 24, 242, "東京 主要路線");
   if (!g_tr.valid) {
     uText(lsjp_r20, 24, 290, "運行情報を取得できませんでした");
     return;
   }
-
-  int ry = 286;  // 次に描画するベースライン
-  if (g_tr.delayedCount > 0) {
-    const int rhd = 32, badgeW = 64, badgeH = 26, capShown = 4;
-    int shown = 0;
-    for (int i = 0; i < TRANSIT_N && shown < capShown; i++) {
-      if (!g_tr.delayed[i]) continue;
-      display.fillRect(24, ry - 21, badgeW, badgeH, GxEPD_BLACK);  // 全行同サイズのバッジ
-      u8g2Fonts.setForegroundColor(GxEPD_WHITE);
-      u8g2Fonts.setBackgroundColor(GxEPD_BLACK);
-      uCenter(lsjp_r20, 24 + badgeW / 2, ry - 2, "遅延");
-      u8g2Fonts.setForegroundColor(GxEPD_BLACK);
-      u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
-      int nx = 24 + badgeW + 16;
-      uText(lsjp_b24, nx, ry, TRANSIT_NAMES[i]);
-      if (g_tr.reason[i][0]) {  // 理由は任意漢字を含むため CJK 全部入りの news フォント
-        int rx = nx + uWidth(lsjp_b24, TRANSIT_NAMES[i]) + 16;
-        uText(lsjp_news, rx, ry, g_tr.reason[i]);
-      }
-      ry += rhd; shown++;
-    }
-    if (g_tr.delayedCount > shown) {
-      snprintf(buf, sizeof buf, "ほか %d 路線が遅延", g_tr.delayedCount - shown);
-      uText(lsjp_r20, 24, ry, buf); ry += 30;
-    }
-    ry += 8;
-  } else {
-    drawCheck(24, ry - 26);
-    uText(lsjp_xb30, 58, ry + 2, "全線 平常運転"); ry += 44;
+  if (g_tr.delayedCount == 0) {           // 全線平常のときだけそう表示
+    drawCheck(24, 262);
+    uText(lsjp_xb30, 58, 292, "全線 平常運転");
+    return;
   }
 
-  // 平常運転中の路線をまとめて列挙（残り高さに合わせて折返し）。
-  const char* norm[TRANSIT_N]; int nn = 0;
-  for (int i = 0; i < TRANSIT_N; i++) if (!g_tr.delayed[i]) norm[nn++] = TRANSIT_NAMES[i];
-  if (nn > 0) {
-    int firstX = -1;
-    if (g_tr.delayedCount > 0) {  // 遅延ありのときは「平常運転」を見出しにして右へ流す
-      uText(lsjp_r20, 24, ry, "平常運転");
-      firstX = 24 + uWidth(lsjp_r20, "平常運転") + 18;
-    }
-    int maxLines = (478 - ry) / 30 + 1;
-    if (maxLines < 1) maxLines = 1; if (maxLines > 4) maxLines = 4;
-    drawNameList(lsjp_b24, 24, ry, W - 48, 30, norm, nn, maxLines, firstX);
+  // 遅延あり: 優先順(京急→横須賀→京浜東北→山手→…)に、入るだけ理由全文を表示。
+  const int badgeW = 64, badgeH = 26, rlh = 25, reasonX = 64, bottom = 470;
+  int ry = 282, shown = 0;
+  for (int p = 0; p < TRANSIT_N; p++) {
+    int i = TRANSIT_PRIORITY[p];
+    if (!g_tr.delayed[i]) continue;
+    if (ry + 28 + rlh > bottom) break;    // 次の路線の名前＋理由1行も入らない
+    display.fillRect(24, ry - 21, badgeW, badgeH, GxEPD_BLACK);
+    u8g2Fonts.setForegroundColor(GxEPD_WHITE);
+    u8g2Fonts.setBackgroundColor(GxEPD_BLACK);
+    uCenter(lsjp_r20, 24 + badgeW / 2, ry - 2, "遅延");
+    u8g2Fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2Fonts.setBackgroundColor(GxEPD_WHITE);
+    uText(lsjp_b24, 24 + badgeW + 16, ry, TRANSIT_NAMES[i]);
+    ry += 28;
+    int maxLines = (bottom - ry) / rlh;
+    if (maxLines > 2) maxLines = 2;
+    if (maxLines < 1) maxLines = 1;
+    int L = 1;
+    if (g_tr.reason[i][0])
+      L = drawReasonWrapped(lsjp_news, reasonX, ry, W - reasonX - 24, rlh, g_tr.reason[i], maxLines);
+    ry += L * rlh + 14;
+    shown++;
+  }
+  if (g_tr.delayedCount > shown) {
+    snprintf(buf, sizeof buf, "ほか %d 路線が遅延", g_tr.delayedCount - shown);
+    uText(lsjp_r20, 24, ry < 472 ? ry : 472, buf);   // 画面外に出さないようクランプ
   }
 }
 
