@@ -251,10 +251,12 @@ static void drawHeader(const struct tm& t) {
 // 上から順に評価し、最初に一致したものを返す（緊急度の高い順）。
 static void heroAdvice(const Weather& w, char* buf, size_t n) {
   WxIcon ic = wxIconFor(w.codeNow);
-  if (w.rainStartHour >= 0)        { snprintf(buf, n, "%d時から雨　傘を忘れずに", w.rainStartHour); return; }
+  // いま起きている天気を優先（既に雨/雪/雷なら「X時から雨」は出さない）。
+  if (ic == WX_THUNDER)            { snprintf(buf, n, "今は雷雨　外出に注意");        return; }
+  if (ic == WX_SNOW)               { snprintf(buf, n, "今は雪　足元に気をつけて");     return; }
   if (w.rainingNow)                { snprintf(buf, n, "今は雨　傘を忘れずに");        return; }
-  if (ic == WX_THUNDER)            { snprintf(buf, n, "雷雨のおそれ　外出に注意");     return; }
-  if (ic == WX_SNOW)               { snprintf(buf, n, "雪　足元に気をつけて");        return; }
+  // これから雨（今は降っていないとき）。
+  if (w.rainStartHour >= 0)        { snprintf(buf, n, "%d時から雨　傘を忘れずに", w.rainStartHour); return; }
   if (w.hiToday >= 35)             { snprintf(buf, n, "猛暑日　熱中症に警戒");        return; }
   if (w.hiToday >= 33)             { snprintf(buf, n, "厳しい暑さ　熱中症に注意");     return; }
   if (w.hiToday >= 30)             { snprintf(buf, n, "真夏日　熱中症に注意");        return; }
