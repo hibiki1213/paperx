@@ -16,6 +16,7 @@
 #include "ota.h"             // GitHub Releases からの無線ファーム更新
 #include "fonts/wx_fonts.h" // pop_temp/pop_clock/pop_mid/lsjp_xb30/lsjp_b24/lsjp_r20/lsjp_r13/lsjp_news
 #include "wx_icons.h"        // Lucide天気アイコン(1bit ビットマップ: 120px/44px)
+#include "moon_bmp.h"        // 満月テクスチャ(1bit 90x90, 暗部=黒)
 #include <qrcode.h>          // ricmoo/QRCode: Wi-Fi設定AP参加用QR
 #include <time.h>
 #include <math.h>
@@ -198,8 +199,11 @@ static double moonAge(int y, int m, int d) {
   double age = fmod(julianDay(y, m, d) - 2451550.1, 29.530588853);
   return age < 0 ? age + 29.530588853 : age;
 }
-static void drawMoon(int cx, int cy, int r, double phase01) {
-  // 影(欠け)側を黒で塗る（新月=黒丸 / 満月=輪郭のみ）。北半球基準で満ちは右側。
+// 満月テクスチャ(暗部=黒)を描き、欠け(影)側を黒で塗りつぶし、輪郭を描く。
+// テクスチャは固定(月は常に同じ面)。新月=全部黒 / 満月=テクスチャ全面。北半球基準で満ちは右側。
+static void drawMoon(int cx, int cy, double phase01) {
+  const int r = MOON_BMP_D / 2;
+  display.drawBitmap(cx - r, cy - r, MOON_BMP, MOON_BMP_D, MOON_BMP_D, GxEPD_BLACK);
   double ct = cos(2 * M_PI * phase01);
   for (int dy = -r; dy <= r; dy++) {
     int xw = (int)lround(sqrt((double)r * r - (double)dy * dy));
@@ -320,8 +324,8 @@ static void drawFooter(const struct tm& t) {
   vbar(MOON_DIV, MAIN_BOT, Hh - MAIN_BOT);
   double age = moonAge(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
   int mcx = (MOON_DIV + W) / 2;
-  drawMoon(mcx, 398, 30, age / 29.530588853);
-  uCenter(lsjp_r20, mcx, 458, moonPhaseName(age));
+  drawMoon(mcx, 404, age / 29.530588853);
+  uCenter(lsjp_r20, mcx, 470, moonPhaseName(age));
 }
 
 // 全面描画（full refresh）。右カラムは常時ニュース、フッタは5日予報＋月。
